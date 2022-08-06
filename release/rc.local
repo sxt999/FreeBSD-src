@@ -57,7 +57,7 @@ if [ $? -eq 0 ]; then
 else
 	# Serial or other console
 	echo
-	echo "Welcome to pfSense!"
+	echo "Welcome to FreeyouEdgeAdvanced!"
 	echo
 	echo "Please choose the appropriate terminal type for your system."
 	echo "Common console types are:"
