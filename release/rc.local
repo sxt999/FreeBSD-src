@@ -165,7 +165,7 @@ if [ ! -f /tmp/buildroom ]; then
 fi
 
 IOPTS="\
-\"Install\" \"Install pfSense\" \
+\"Install\" \"Install FreeyouEdgeAdvanced\" \
 \"Rescue Shell\" \"Launch a shell for rescue operations\""
 
 if [ -x /root/recover_configxml.sh ] ; then
