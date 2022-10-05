@@ -228,7 +228,7 @@ static void	vxlan_ftable_flush(struct vxlan_softc *, int);
 static void	vxlan_ftable_expire(struct vxlan_softc *);
 static int	vxlan_ftable_update_locked(struct vxlan_softc *,
 		    const union vxlan_sockaddr *, const uint8_t *,
-		    struct rm_priotracker *);
+		    struct rm_priotracker *, uint32_t);
 static int	vxlan_ftable_delete_locked(struct vxlan_softc *,
 		    const union vxlan_sockaddr *, const uint8_t *,
 		    struct rm_priotracker *);
@@ -437,9 +437,9 @@ TUNABLE_INT("net.link.vxlan.reuse_port", &vxlan_reuse_port);
 /*
 * permanent forward talbe item
 */
-#ifndef VXLAN_PERMANENT
-#define VXLAN_PERMANENT 0x7fffffffffffffff
-#endif
+// #ifndef VXLAN_PERMANENT
+// #define VXLAN_PERMANENT 0x7fffffffffffffff
+// #endif
 
 /* Number of seconds between pruning attempts of the forwarding table. */
 #ifndef VXLAN_FTABLE_PRUNE
@@ -636,7 +636,7 @@ vxlan_fdb_find_rdst(struct vxlan_ftable_entry *f,
 static int
 vxlan_ftable_update_locked(struct vxlan_softc *sc,
     const union vxlan_sockaddr *vxlsa, const uint8_t *mac,
-    struct rm_priotracker *tracker)
+    struct rm_priotracker *tracker, uint32_t flags)
 {
 	struct vxlan_ftable_entry *fe;
 	struct vxlan_rdst *rd;
@@ -652,12 +652,13 @@ again:
 	 */
 	fe = vxlan_ftable_entry_lookup(sc, mac);
 	if (fe != NULL) {
-		if (vxlan_ftable_addr_cmp(mac, all_zeros_mac) == 0) {
-			fe->vxlfe_expire = VXLAN_PERMANENT;
-		}
-		else {
-			fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
-		}
+		// if (vxlan_ftable_addr_cmp(mac, all_zeros_mac) == 0) {
+		// 	fe->vxlfe_expire = VXLAN_PERMANENT;
+		// }
+		// else {
+		// 	fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
+		// }
+		fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
 		rd = vxlan_fdb_find_rdst(fe, vxlsa);
 		if (rd) {
 			return (0);
@@ -694,7 +695,7 @@ again:
 	if (fe == NULL)
 		return (ENOMEM);
 
-	vxlan_ftable_entry_init(sc, fe, mac, &vxlsa->sa, VXLAN_FE_FLAG_DYNAMIC);
+	vxlan_ftable_entry_init(sc, fe, mac, &vxlsa->sa, flags);
 
 	/* The prior lookup failed, so the insert should not. */
 	error = vxlan_ftable_entry_insert(sc, fe);
@@ -772,7 +773,7 @@ vxlan_ftable_learn(struct vxlan_softc *sc, const struct sockaddr *sa,
 	}
 
 	VXLAN_RLOCK(sc, &tracker);
-	error = vxlan_ftable_update_locked(sc, &vxlsa, mac, &tracker);
+	error = vxlan_ftable_update_locked(sc, &vxlsa, mac, &tracker, VXLAN_FE_FLAG_DYNAMIC);
 	VXLAN_UNLOCK(sc, &tracker);
 
 	return (error);
@@ -842,12 +843,13 @@ vxlan_ftable_entry_init(struct vxlan_softc *sc, struct vxlan_ftable_entry *fe,
 {
 
 	fe->vxlfe_flags = flags;
-	if (vxlan_ftable_addr_cmp(mac, all_zeros_mac) == 0) {
-		fe->vxlfe_expire = VXLAN_PERMANENT;
-	}
-	else {
-		fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
-	}
+	// if (vxlan_ftable_addr_cmp(mac, all_zeros_mac) == 0) {
+	// 	fe->vxlfe_expire = VXLAN_PERMANENT;
+	// }
+	// else {
+	// 	fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
+	// }
+	fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
 	memcpy(fe->vxlfe_mac, mac, ETHER_ADDR_LEN);
 	// vxlan_sockaddr_copy(&fe->vxlfe_raddr, sa);
 	fe->remotes = malloc(sizeof(struct vxlan_rdst_head), M_VXLAN, M_ZERO | M_WAITOK);
@@ -2261,7 +2263,7 @@ vxlan_ctrl_ftable_entry_add(struct vxlan_softc *sc, void *arg)
 	}
 
 	VXLAN_RLOCK(sc, &tracker);
-	error = vxlan_ftable_update_locked(sc, &vxlsa, cmd->vxlcmd_mac, &tracker);
+	error = vxlan_ftable_update_locked(sc, &vxlsa, cmd->vxlcmd_mac, &tracker, VXLAN_FE_FLAG_STATIC);
 	VXLAN_UNLOCK(sc, &tracker);
 
 	return (error);
