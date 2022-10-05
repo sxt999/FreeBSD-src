@@ -295,6 +295,8 @@ struct rt_msghdr {
 #define	RTM_DELMADDR	0x10	/* (4) mcast group membership being deleted */
 #define	RTM_IFANNOUNCE	0x11	/* (5) iface arrival/departure */
 #define	RTM_IEEE80211	0x12	/* (5) IEEE80211 wireless event */
+#define RTM_NEWFDB  0x13  /* rt item added from bridge fdb */
+#define RTM_DELFDB  0x14  /* rt item removed from bridge fdb */
 
 /*
  * Bitmask values for rtm_inits and rmx_locks.
@@ -447,6 +449,7 @@ void	 rt_missmsg_fib(int, struct rt_addrinfo *, int, int, int);
 void	 rt_newaddrmsg(int, struct ifaddr *, int, struct rtentry *);
 void	 rt_newaddrmsg_fib(int, struct ifaddr *, int, struct rtentry *, int);
 int	 rt_addrmsg(int, struct ifaddr *, int);
+int  rtsock_fdbmsg(int, struct ifnet *, struct ifnet *, const uint8_t *, const uint16_t *);
 int	 rt_routemsg(int, struct ifnet *ifp, int, struct rtentry *, int);
 void	 rt_newmaddrmsg(int, struct ifmultiaddr *);
 int	 rt_setgate(struct rtentry *, struct sockaddr *, struct sockaddr *);

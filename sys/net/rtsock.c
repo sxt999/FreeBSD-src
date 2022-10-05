@@ -1053,6 +1053,8 @@ rtsock_msg_mbuf(int type, struct rt_addrinfo *rtinfo)
 
 	case RTM_DELADDR:
 	case RTM_NEWADDR:
+	case RTM_NEWFDB:
+	case RTM_DELFDB:
 		len = sizeof(struct ifa_msghdr);
 		break;
 
@@ -1354,6 +1356,48 @@ rtsock_addrmsg(int cmd, struct ifaddr *ifa, int fibnum)
 	}
 
 	rt_dispatch(m, sa ? sa->sa_family : AF_UNSPEC);
+
+	return (0);
+}
+
+/*
+ * rt item added from bridge fdb
+ * rt item removed from bridge fdb
+ */
+int
+rtsock_fdbmsg(int cmd, struct ifnet *bridge_ifp, struct ifnet *member_ifp, const uint8_t *mac, const uint16_t *vid)
+{
+	struct rt_addrinfo info;
+	struct mbuf *m;
+	struct ifa_msghdr *ifam;
+	struct sockaddr_dl sdl;
+
+	if (bridge_ifp == NULL)
+		return (0);
+	if (member_ifp == NULL)
+		return (0);
+	if (mac == NULL)
+		return (0);
+	if (vid == NULL)
+		return (0);
+
+	sdl.sdl_len = sizeof(sdl);
+	sdl.sdl_family = AF_LINK;
+	sdl.sdl_index = member_ifp->if_index;
+	sdl.sdl_nlen  = 2;
+	sdl.sdl_alen  = 6;
+	bcopy((const void *)vid, (caddr_t)(sdl.sdl_data), 2);
+	bcopy((const void *)mac, LLADDR(&sdl), 6);
+	bzero((caddr_t)&info, sizeof(info));
+	info.rti_info[RTAX_IFP] = (struct sockaddr *)&sdl;
+	if ((m = rtsock_msg_mbuf(cmd, &info)) == NULL)
+		return (ENOBUFS);
+	ifam = mtod(m, struct ifa_msghdr *);
+	ifam->ifam_index = bridge_ifp->if_index;
+	ifam->ifam_flags = bridge_ifp->if_flags;
+	ifam->ifam_addrs = info.rti_addrs;
+
+	rt_dispatch(m, AF_LINK);
 
 	return (0);
 }

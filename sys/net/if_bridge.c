@@ -982,8 +982,6 @@ bridge_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 			break;
 		}
 		CK_LIST_FOREACH(bif, &sc->sc_iflist, bif_next) {
-			if (bif->bif_ifp->if_type == IFT_GIF)
-				continue;
 			if (bif->bif_ifp->if_mtu != ifr->ifr_mtu) {
 				log(LOG_NOTICE, "%s: invalid MTU: %u(%s)"
 				    " != %d\n", sc->sc_ifp->if_xname,
@@ -1296,14 +1294,12 @@ bridge_ioctl_add(struct bridge_softc *sc, void *arg)
 	}
 #endif
 	/* Allow the first Ethernet member to define the MTU */
-	if (ifs->if_type != IFT_GIF) {
-		if (CK_LIST_EMPTY(&sc->sc_iflist))
-			sc->sc_ifp->if_mtu = ifs->if_mtu;
-		else if (sc->sc_ifp->if_mtu != ifs->if_mtu) {
-			if_printf(sc->sc_ifp, "invalid MTU: %u(%s) != %u\n",
-			    ifs->if_mtu, ifs->if_xname, sc->sc_ifp->if_mtu);
-			return (EINVAL);
-		}
+	if (CK_LIST_EMPTY(&sc->sc_iflist))
+		sc->sc_ifp->if_mtu = ifs->if_mtu;
+	else if (sc->sc_ifp->if_mtu != ifs->if_mtu) {
+		if_printf(sc->sc_ifp, "invalid MTU: %u(%s) != %u\n",
+		    ifs->if_mtu, ifs->if_xname, sc->sc_ifp->if_mtu);
+		return (EINVAL);
 	}
 
 	bif = malloc(sizeof(*bif), M_DEVBUF, M_NOWAIT|M_ZERO);
@@ -2877,6 +2873,7 @@ bridge_rtupdate(struct bridge_softc *sc, const uint8_t *dst, uint16_t vlan,
 		}
 		brt->brt_dst = bif;
 		bif->bif_addrcnt++;
+		rtsock_fdbmsg(RTM_NEWFDB, sc->sc_ifp, bif->bif_ifp, dst, &vlan);
 
 		BRIDGE_RT_UNLOCK(sc);
 	}
@@ -2887,6 +2884,7 @@ bridge_rtupdate(struct bridge_softc *sc, const uint8_t *dst, uint16_t vlan,
 		brt->brt_dst->bif_addrcnt--;
 		brt->brt_dst = bif;
 		brt->brt_dst->bif_addrcnt++;
+		rtsock_fdbmsg(RTM_NEWFDB, sc->sc_ifp, bif->bif_ifp, dst, &vlan);
 		BRIDGE_RT_UNLOCK(sc);
 	}
 
@@ -3241,6 +3239,7 @@ bridge_rtnode_destroy(struct bridge_softc *sc, struct bridge_rtnode *brt)
 	CK_LIST_REMOVE(brt, brt_list);
 	sc->sc_brtcnt--;
 	brt->brt_dst->bif_addrcnt--;
+	rtsock_fdbmsg(RTM_DELFDB, sc->sc_ifp, brt->brt_dst->bif_ifp, brt->brt_addr, &(brt->brt_vlan));
 
 	epoch_call(net_epoch_preempt, &brt->brt_epoch_ctx,
 	    bridge_rtnode_destroy_cb);
