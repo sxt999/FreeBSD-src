@@ -98,7 +98,7 @@ device		lagg
 device		vte
 
 # FreeyouEdgeAdvanced
-device    if_vxlan
+device    vxlan
 device    epair
 
 # IP/IPFW
