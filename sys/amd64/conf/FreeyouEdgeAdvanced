@@ -97,6 +97,10 @@ device		carp
 device		lagg
 device		vte
 
+# FreeyouEdgeAdvanced
+device    if_vxlan
+device    epair
+
 # IP/IPFW
 options 	IPFIREWALL_DEFAULT_TO_ACCEPT
 options 	IPFIREWALL_VERBOSE
