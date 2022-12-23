@@ -74,6 +74,8 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/ip6_var.h>
 #include <netinet6/scope6_var.h>
 
+const uint8_t all_zeros_mac[ETHER_ADDR_LEN];
+
 struct vxlan_softc;
 LIST_HEAD(vxlan_softc_head, vxlan_softc);
 
@@ -112,11 +114,19 @@ struct vxlan_socket {
 #define VXLAN_SO_ACQUIRE(_vso)		refcount_acquire(&(_vso)->vxlso_refcnt)
 #define VXLAN_SO_RELEASE(_vso)		refcount_release(&(_vso)->vxlso_refcnt)
 
+struct vxlan_rdst {
+	union vxlan_sockaddr		 vxlfe_raddr;
+	LIST_ENTRY(vxlan_rdst)       list;
+};
+
+LIST_HEAD(vxlan_rdst_head, vxlan_rdst);
+
 struct vxlan_ftable_entry {
 	LIST_ENTRY(vxlan_ftable_entry)	 vxlfe_hash;
 	uint16_t			 vxlfe_flags;
 	uint8_t				 vxlfe_mac[ETHER_ADDR_LEN];
-	union vxlan_sockaddr		 vxlfe_raddr;
+	struct vxlan_rdst_head  *remotes;
+	// union vxlan_sockaddr		 vxlfe_raddr;
 	time_t				 vxlfe_expire;
 };
 
@@ -218,6 +228,9 @@ static void	vxlan_ftable_flush(struct vxlan_softc *, int);
 static void	vxlan_ftable_expire(struct vxlan_softc *);
 static int	vxlan_ftable_update_locked(struct vxlan_softc *,
 		    const union vxlan_sockaddr *, const uint8_t *,
+		    struct rm_priotracker *, uint32_t);
+static int	vxlan_ftable_delete_locked(struct vxlan_softc *,
+		    const union vxlan_sockaddr *, const uint8_t *,
 		    struct rm_priotracker *);
 static int	vxlan_ftable_learn(struct vxlan_softc *,
 		    const struct sockaddr *, const uint8_t *);
@@ -233,6 +246,11 @@ static void	vxlan_ftable_entry_destroy(struct vxlan_softc *,
 		    struct vxlan_ftable_entry *);
 static int	vxlan_ftable_entry_insert(struct vxlan_softc *,
 		    struct vxlan_ftable_entry *);
+static int
+vxlan_addr_equal(const union vxlan_sockaddr *, const union vxlan_sockaddr *);
+static struct vxlan_rdst *
+        vxlan_fdb_find_rdst(struct vxlan_ftable_entry *,
+		    const union vxlan_sockaddr *);
 static struct vxlan_ftable_entry *
 		vxlan_ftable_entry_lookup(struct vxlan_softc *,
 		    const uint8_t *);
@@ -416,6 +434,13 @@ TUNABLE_INT("net.link.vxlan.reuse_port", &vxlan_reuse_port);
 #define VXLAN_FTABLE_MAX_TIMEOUT	(60 * 60 * 24)
 #endif
 
+/*
+* permanent forward talbe item
+*/
+// #ifndef VXLAN_PERMANENT
+// #define VXLAN_PERMANENT 0x7fffffffffffffff
+// #endif
+
 /* Number of seconds between pruning attempts of the forwarding table. */
 #ifndef VXLAN_FTABLE_PRUNE
 #define VXLAN_FTABLE_PRUNE	(5 * 60)
@@ -582,11 +607,39 @@ vxlan_ftable_expire(struct vxlan_softc *sc)
 }
 
 static int
+vxlan_addr_equal(const union vxlan_sockaddr *a, const union vxlan_sockaddr *b)
+{
+	if (a->sa.sa_family != b->sa.sa_family) {
+		return 0;
+	}
+	if (a->sa.sa_family == AF_INET6) {
+		return IN6_ARE_ADDR_EQUAL(&a->in6.sin6_addr, &b->in6.sin6_addr);
+	} else {
+		return a->in4.sin_addr.s_addr == b->in4.sin_addr.s_addr;
+	}
+}
+
+static struct vxlan_rdst *
+vxlan_fdb_find_rdst(struct vxlan_ftable_entry *f,
+	const union vxlan_sockaddr *vxlsa)
+{
+	struct vxlan_rdst *rd;
+
+	LIST_FOREACH(rd, f->remotes, list) {
+		if (vxlan_addr_equal(vxlsa, &rd->vxlfe_raddr)) {
+			return rd;
+		}
+	}
+	return NULL;
+}
+
+static int
 vxlan_ftable_update_locked(struct vxlan_softc *sc,
     const union vxlan_sockaddr *vxlsa, const uint8_t *mac,
-    struct rm_priotracker *tracker)
+    struct rm_priotracker *tracker, uint32_t flags)
 {
 	struct vxlan_ftable_entry *fe;
+	struct vxlan_rdst *rd;
 	int error __unused;
 
 	VXLAN_LOCK_ASSERT(sc);
@@ -599,18 +652,30 @@ again:
 	 */
 	fe = vxlan_ftable_entry_lookup(sc, mac);
 	if (fe != NULL) {
+		// if (vxlan_ftable_addr_cmp(mac, all_zeros_mac) == 0) {
+		// 	fe->vxlfe_expire = VXLAN_PERMANENT;
+		// }
+		// else {
+		// 	fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
+		// }
 		fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
-
-		if (!VXLAN_FE_IS_DYNAMIC(fe) ||
-		    vxlan_sockaddr_in_equal(&fe->vxlfe_raddr, &vxlsa->sa))
+		rd = vxlan_fdb_find_rdst(fe, vxlsa);
+		if (rd) {
 			return (0);
+		}
+
+		// if (!VXLAN_FE_IS_DYNAMIC(fe) ||
+		//     vxlan_sockaddr_in_equal(&fe->vxlfe_raddr, &vxlsa->sa))
+		// 	return (0);
 		if (!VXLAN_LOCK_WOWNED(sc)) {
 			VXLAN_RUNLOCK(sc, tracker);
 			VXLAN_WLOCK(sc);
 			sc->vxl_stats.ftable_lock_upgrade_failed++;
 			goto again;
 		}
-		vxlan_sockaddr_in_copy(&fe->vxlfe_raddr, &vxlsa->sa);
+		rd = malloc(sizeof(*rd), M_VXLAN, M_ZERO | M_WAITOK);
+		vxlan_sockaddr_copy(&rd->vxlfe_raddr, &vxlsa->sa);
+		LIST_INSERT_HEAD(fe->remotes, rd, list);
 		return (0);
 	}
 
@@ -630,11 +695,58 @@ again:
 	if (fe == NULL)
 		return (ENOMEM);
 
-	vxlan_ftable_entry_init(sc, fe, mac, &vxlsa->sa, VXLAN_FE_FLAG_DYNAMIC);
+	vxlan_ftable_entry_init(sc, fe, mac, &vxlsa->sa, flags);
 
 	/* The prior lookup failed, so the insert should not. */
 	error = vxlan_ftable_entry_insert(sc, fe);
 	MPASS(error == 0);
+
+	return (0);
+}
+
+static int
+vxlan_ftable_delete_locked(struct vxlan_softc *sc,
+    const union vxlan_sockaddr *vxlsa, const uint8_t *mac,
+    struct rm_priotracker *tracker)
+{
+	struct vxlan_ftable_entry *fe;
+	struct vxlan_rdst *rd, *rd1;
+	int error __unused;
+
+	VXLAN_LOCK_ASSERT(sc);
+
+again1:
+	/*
+	 * A forwarding entry for this MAC address might already exist. If
+	 * so, delete it, otherwise do nothing. We may have to upgrade
+	 * the lock if we have to change or delete an entry.
+	 */
+	fe = vxlan_ftable_entry_lookup(sc, mac);
+	if (fe != NULL) {
+		rd = vxlan_fdb_find_rdst(fe, vxlsa);
+		if (rd == NULL) {
+			return (0);
+		}
+
+		// if (!VXLAN_FE_IS_DYNAMIC(fe) ||
+		//     vxlan_sockaddr_in_equal(&fe->vxlfe_raddr, &vxlsa->sa))
+		// 	return (0);
+		if (!VXLAN_LOCK_WOWNED(sc)) {
+			VXLAN_RUNLOCK(sc, tracker);
+			VXLAN_WLOCK(sc);
+			sc->vxl_stats.ftable_lock_upgrade_failed++;
+			goto again1;
+		}
+		rd1 = LIST_FIRST(fe->remotes);
+		if (rd1 == NULL || LIST_NEXT(rd1, list) == NULL) {
+			vxlan_ftable_entry_destroy(sc, fe);
+			return (0);
+		}
+
+		LIST_REMOVE(rd, list);
+		free(rd, M_VXLAN);
+		return (0);
+	}
 
 	return (0);
 }
@@ -661,7 +773,7 @@ vxlan_ftable_learn(struct vxlan_softc *sc, const struct sockaddr *sa,
 	}
 
 	VXLAN_RLOCK(sc, &tracker);
-	error = vxlan_ftable_update_locked(sc, &vxlsa, mac, &tracker);
+	error = vxlan_ftable_update_locked(sc, &vxlsa, mac, &tracker, VXLAN_FE_FLAG_DYNAMIC);
 	VXLAN_UNLOCK(sc, &tracker);
 
 	return (error);
@@ -731,18 +843,35 @@ vxlan_ftable_entry_init(struct vxlan_softc *sc, struct vxlan_ftable_entry *fe,
 {
 
 	fe->vxlfe_flags = flags;
+	// if (vxlan_ftable_addr_cmp(mac, all_zeros_mac) == 0) {
+	// 	fe->vxlfe_expire = VXLAN_PERMANENT;
+	// }
+	// else {
+	// 	fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
+	// }
 	fe->vxlfe_expire = time_uptime + sc->vxl_ftable_timeout;
 	memcpy(fe->vxlfe_mac, mac, ETHER_ADDR_LEN);
-	vxlan_sockaddr_copy(&fe->vxlfe_raddr, sa);
+	// vxlan_sockaddr_copy(&fe->vxlfe_raddr, sa);
+	fe->remotes = malloc(sizeof(struct vxlan_rdst_head), M_VXLAN, M_ZERO | M_WAITOK);
+	LIST_INIT(fe->remotes);
+	struct vxlan_rdst *rd;
+	rd = malloc(sizeof(*rd), M_VXLAN, M_ZERO | M_WAITOK);
+	vxlan_sockaddr_copy(&rd->vxlfe_raddr, sa);
+	LIST_INSERT_HEAD(fe->remotes, rd, list);
+
 }
 
 static void
 vxlan_ftable_entry_destroy(struct vxlan_softc *sc,
     struct vxlan_ftable_entry *fe)
 {
-
+	struct vxlan_rdst *rd, *trd;
 	sc->vxl_ftable_cnt--;
 	LIST_REMOVE(fe, vxlfe_hash);
+	LIST_FOREACH_SAFE(rd, fe->remotes, list, trd) {
+		free(rd, M_VXLAN);
+	}
+	free(fe->remotes, M_VXLAN);
 	vxlan_ftable_entry_free(fe);
 }
 
@@ -810,36 +939,39 @@ vxlan_ftable_entry_dump(struct vxlan_ftable_entry *fe, struct sbuf *sb)
 	char buf[64];
 	const union vxlan_sockaddr *sa;
 	const void *addr;
+	struct vxlan_rdst *rd;
 	int i, len, af, width;
 
-	sa = &fe->vxlfe_raddr;
-	af = sa->sa.sa_family;
-	len = sbuf_len(sb);
+	LIST_FOREACH(rd, fe->remotes, list) {
+		sa = &rd->vxlfe_raddr;
+		af = sa->sa.sa_family;
+		len = sbuf_len(sb);
 
-	sbuf_printf(sb, "%c 0x%02X ", VXLAN_FE_IS_DYNAMIC(fe) ? 'D' : 'S',
-	    fe->vxlfe_flags);
+		sbuf_printf(sb, "%c 0x%02X ", VXLAN_FE_IS_DYNAMIC(fe) ? 'D' : 'S',
+			fe->vxlfe_flags);
 
-	for (i = 0; i < ETHER_ADDR_LEN - 1; i++)
-		sbuf_printf(sb, "%02X:", fe->vxlfe_mac[i]);
-	sbuf_printf(sb, "%02X ", fe->vxlfe_mac[i]);
+		for (i = 0; i < ETHER_ADDR_LEN - 1; i++)
+			sbuf_printf(sb, "%02X:", fe->vxlfe_mac[i]);
+		sbuf_printf(sb, "%02X ", fe->vxlfe_mac[i]);
 
-	if (af == AF_INET) {
-		addr = &sa->in4.sin_addr;
-		width = INET_ADDRSTRLEN - 1;
-	} else {
-		addr = &sa->in6.sin6_addr;
-		width = INET6_ADDRSTRLEN - 1;
+		if (af == AF_INET) {
+			addr = &sa->in4.sin_addr;
+			width = INET_ADDRSTRLEN - 1;
+		} else {
+			addr = &sa->in6.sin6_addr;
+			width = INET6_ADDRSTRLEN - 1;
+		}
+		inet_ntop(af, addr, buf, sizeof(buf));
+		sbuf_printf(sb, "%*s ", width, buf);
+
+		sbuf_printf(sb, "%08jd", (intmax_t)fe->vxlfe_expire);
+
+		sbuf_putc(sb, '\n');
+
+		/* Truncate a partial line. */
+		if (sbuf_error(sb) != 0)
+			sbuf_setpos(sb, len);
 	}
-	inet_ntop(af, addr, buf, sizeof(buf));
-	sbuf_printf(sb, "%*s ", width, buf);
-
-	sbuf_printf(sb, "%08jd", (intmax_t)fe->vxlfe_expire);
-
-	sbuf_putc(sb, '\n');
-
-	/* Truncate a partial line. */
-	if (sbuf_error(sb) != 0)
-		sbuf_setpos(sb, len);
 }
 
 static struct vxlan_socket *
@@ -2107,11 +2239,12 @@ vxlan_ctrl_ftable_entry_add(struct vxlan_softc *sc, void *arg)
 {
 	union vxlan_sockaddr vxlsa;
 	struct ifvxlancmd *cmd;
-	struct vxlan_ftable_entry *fe;
+	struct rm_priotracker tracker;
 	int error;
 
 	cmd = arg;
 	vxlsa = cmd->vxlcmd_sa;
+	vxlsa.in4.sin_port = sc->vxl_dst_addr.in4.sin_port;
 
 	if (!VXLAN_SOCKADDR_IS_IPV46(&vxlsa))
 		return (EINVAL);
@@ -2129,22 +2262,9 @@ vxlan_ctrl_ftable_entry_add(struct vxlan_softc *sc, void *arg)
 			return (error);
 	}
 
-	fe = vxlan_ftable_entry_alloc();
-	if (fe == NULL)
-		return (ENOMEM);
-
-	if (vxlsa.in4.sin_port == 0)
-		vxlsa.in4.sin_port = sc->vxl_dst_addr.in4.sin_port;
-
-	vxlan_ftable_entry_init(sc, fe, cmd->vxlcmd_mac, &vxlsa.sa,
-	    VXLAN_FE_FLAG_STATIC);
-
-	VXLAN_WLOCK(sc);
-	error = vxlan_ftable_entry_insert(sc, fe);
-	VXLAN_WUNLOCK(sc);
-
-	if (error)
-		vxlan_ftable_entry_free(fe);
+	VXLAN_RLOCK(sc, &tracker);
+	error = vxlan_ftable_update_locked(sc, &vxlsa, cmd->vxlcmd_mac, &tracker, VXLAN_FE_FLAG_STATIC);
+	VXLAN_UNLOCK(sc, &tracker);
 
 	return (error);
 }
@@ -2152,20 +2272,17 @@ vxlan_ctrl_ftable_entry_add(struct vxlan_softc *sc, void *arg)
 static int
 vxlan_ctrl_ftable_entry_rem(struct vxlan_softc *sc, void *arg)
 {
+	union vxlan_sockaddr vxlsa;
 	struct ifvxlancmd *cmd;
-	struct vxlan_ftable_entry *fe;
+	struct rm_priotracker tracker;
 	int error;
 
 	cmd = arg;
+	vxlsa = cmd->vxlcmd_sa;
 
-	VXLAN_WLOCK(sc);
-	fe = vxlan_ftable_entry_lookup(sc, cmd->vxlcmd_mac);
-	if (fe != NULL) {
-		vxlan_ftable_entry_destroy(sc, fe);
-		error = 0;
-	} else
-		error = ENOENT;
-	VXLAN_WUNLOCK(sc);
+	VXLAN_RLOCK(sc, &tracker);
+	error = vxlan_ftable_delete_locked(sc, &vxlsa, cmd->vxlcmd_mac, &tracker);
+	VXLAN_UNLOCK(sc, &tracker);
 
 	return (error);
 }
@@ -2452,6 +2569,8 @@ vxlan_transmit(struct ifnet *ifp, struct mbuf *m)
 	struct vxlan_ftable_entry *fe;
 	struct ifnet *mcifp;
 	struct ether_header *eh;
+	struct vxlan_rdst *rd, *fd = NULL;
+	struct mbuf *m1;
 	int ipv4, error;
 
 	sc = ifp->if_softc;
@@ -2468,24 +2587,43 @@ vxlan_transmit(struct ifnet *ifp, struct mbuf *m)
 		return (ENETDOWN);
 	}
 
-	if ((m->m_flags & (M_BCAST | M_MCAST)) == 0)
-		fe = vxlan_ftable_entry_lookup(sc, eh->ether_dhost);
-	if (fe == NULL)
+	// if ((m->m_flags & (M_BCAST | M_MCAST)) == 0)
+	fe = vxlan_ftable_entry_lookup(sc, eh->ether_dhost);
+	if (fe == NULL) {
+		fe = vxlan_ftable_entry_lookup(sc, all_zeros_mac);
+	}
+	if (fe == NULL) {
 		fe = &sc->vxl_default_fe;
-	vxlan_sockaddr_copy(&vxlsa, &fe->vxlfe_raddr.sa);
-
-	ipv4 = VXLAN_SOCKADDR_IS_IPV4(&vxlsa) != 0;
-	if (vxlan_sockaddr_in_multicast(&vxlsa) != 0)
-		mcifp = vxlan_multicast_if_ref(sc, ipv4);
+	}
 
 	VXLAN_ACQUIRE(sc);
+	LIST_FOREACH(rd, fe->remotes, list) {
+		if (!fd) {
+			fd = rd;
+			continue;
+		}
+		vxlan_sockaddr_copy(&vxlsa, &rd->vxlfe_raddr.sa);
+		m1 = m_copypacket(m, M_NOWAIT);
+		ipv4 = VXLAN_SOCKADDR_IS_IPV4(&vxlsa) != 0;
+		// if (vxlan_sockaddr_in_multicast(&vxlsa) != 0)
+		// 	mcifp = vxlan_multicast_if_ref(sc, ipv4);
+
+		if (ipv4 != 0)
+			error = vxlan_encap4(sc, &vxlsa, m1);
+		else
+			error = vxlan_encap6(sc, &vxlsa, m1);
+	}
+	if (fd) {
+		vxlan_sockaddr_copy(&vxlsa, &fd->vxlfe_raddr.sa);
+		ipv4 = VXLAN_SOCKADDR_IS_IPV4(&vxlsa) != 0;
+		if (vxlan_sockaddr_in_multicast(&vxlsa) != 0)
+			mcifp = vxlan_multicast_if_ref(sc, ipv4);
+		if (ipv4 != 0)
+			error = vxlan_encap4(sc, &vxlsa, m);
+		else
+			error = vxlan_encap6(sc, &vxlsa, m);
+	}
 	VXLAN_RUNLOCK(sc, &tracker);
-
-	if (ipv4 != 0)
-		error = vxlan_encap4(sc, &vxlsa, m);
-	else
-		error = vxlan_encap6(sc, &vxlsa, m);
-
 	vxlan_release(sc);
 	if (mcifp != NULL)
 		if_rele(mcifp);
