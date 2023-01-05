@@ -474,29 +474,29 @@ igc_if_attach_pre(if_ctx_t ctx)
 	/* SYSCTL stuff */
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
-	    OID_AUTO, "nvm", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    OID_AUTO, "nvm", CTLTYPE_INT | CTLFLAG_RW,
 	    adapter, 0, igc_sysctl_nvm_info, "I", "NVM Information");
 
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
-	    OID_AUTO, "debug", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    OID_AUTO, "debug", CTLTYPE_INT | CTLFLAG_RW,
 	    adapter, 0, igc_sysctl_debug_info, "I", "Debug Information");
 
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
-	    OID_AUTO, "fc", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    OID_AUTO, "fc", CTLTYPE_INT | CTLFLAG_RW,
 	    adapter, 0, igc_set_flowcntl, "I", "Flow Control");
 
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
 	    OID_AUTO, "reg_dump",
-	    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT, adapter, 0,
+	    CTLTYPE_STRING | CTLFLAG_RD, adapter, 0,
 	    igc_get_regs, "A", "Dump Registers");
 
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
 	    OID_AUTO, "rs_dump",
-	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, adapter, 0,
+	    CTLTYPE_INT | CTLFLAG_RW, adapter, 0,
 	    igc_get_rs, "I", "Dump RS indexes");
 
 	/* Determine hardware and mac info */
@@ -606,7 +606,7 @@ igc_if_attach_pre(if_ctx_t ctx)
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
 	    OID_AUTO, "eee_control",
-	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    CTLTYPE_INT | CTLFLAG_RW,
 	    adapter, 0, igc_sysctl_eee, "I",
 	    "Disable Energy Efficient Ethernet");
 
@@ -1089,7 +1089,7 @@ igc_if_set_promisc(if_ctx_t ctx, int flags)
 	if (flags & IFF_ALLMULTI)
 		mcnt = MAX_NUM_MULTICAST_ADDRESSES;
 	else
-		mcnt = min(if_llmaddr_count(ifp), MAX_NUM_MULTICAST_ADDRESSES);
+		mcnt = if_multiaddr_count(ifp, MAX_NUM_MULTICAST_ADDRESSES);
 
 	/* Don't disable if in MAX groups */
 	if (mcnt < MAX_NUM_MULTICAST_ADDRESSES)
@@ -2471,11 +2471,11 @@ igc_add_hw_stats(struct igc_adapter *adapter)
 			CTLFLAG_RD, &adapter->watchdog_events,
 			"Watchdog timeouts");
 	SYSCTL_ADD_PROC(ctx, child, OID_AUTO, "device_control",
-	    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+	    CTLTYPE_UINT | CTLFLAG_RD,
 	    adapter, IGC_CTRL, igc_sysctl_reg_handler, "IU",
 	    "Device Control Register");
 	SYSCTL_ADD_PROC(ctx, child, OID_AUTO, "rx_control",
-	    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+	    CTLTYPE_UINT | CTLFLAG_RD,
 	    adapter, IGC_RCTL, igc_sysctl_reg_handler, "IU",
 	    "Receiver Control Register");
 	SYSCTL_ADD_UINT(ctx, child, OID_AUTO, "fc_high_water",
@@ -2493,11 +2493,11 @@ igc_add_hw_stats(struct igc_adapter *adapter)
 		queue_list = SYSCTL_CHILDREN(queue_node);
 
 		SYSCTL_ADD_PROC(ctx, queue_list, OID_AUTO, "txd_head",
-		    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_NEEDGIANT, adapter,
+		    CTLTYPE_UINT | CTLFLAG_RD, adapter,
 		    IGC_TDH(txr->me), igc_sysctl_reg_handler, "IU",
 		    "Transmit Descriptor Head");
 		SYSCTL_ADD_PROC(ctx, queue_list, OID_AUTO, "txd_tail",
-		    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_NEEDGIANT, adapter,
+		    CTLTYPE_UINT | CTLFLAG_RD, adapter,
 		    IGC_TDT(txr->me), igc_sysctl_reg_handler, "IU",
 		    "Transmit Descriptor Tail");
 		SYSCTL_ADD_ULONG(ctx, queue_list, OID_AUTO, "tx_irq",
@@ -2513,11 +2513,11 @@ igc_add_hw_stats(struct igc_adapter *adapter)
 		queue_list = SYSCTL_CHILDREN(queue_node);
 
 		SYSCTL_ADD_PROC(ctx, queue_list, OID_AUTO, "rxd_head",
-		    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_NEEDGIANT, adapter,
+		    CTLTYPE_UINT | CTLFLAG_RD, adapter,
 		    IGC_RDH(rxr->me), igc_sysctl_reg_handler, "IU",
 		    "Receive Descriptor Head");
 		SYSCTL_ADD_PROC(ctx, queue_list, OID_AUTO, "rxd_tail",
-		    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_NEEDGIANT, adapter,
+		    CTLTYPE_UINT | CTLFLAG_RD, adapter,
 		    IGC_RDT(rxr->me), igc_sysctl_reg_handler, "IU",
 		    "Receive Descriptor Tail");
 		SYSCTL_ADD_ULONG(ctx, queue_list, OID_AUTO, "rx_irq",
@@ -2785,7 +2785,7 @@ igc_add_int_delay_sysctl(struct igc_adapter *adapter, const char *name,
 	info->value = value;
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(adapter->dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(adapter->dev)),
-	    OID_AUTO, name, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    OID_AUTO, name, CTLTYPE_INT | CTLFLAG_RW,
 	    info, 0, igc_sysctl_int_delay, "I", description);
 }
 
